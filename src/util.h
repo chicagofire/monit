@@ -184,24 +184,6 @@ pid_t Util_getPid(char *pidfile);
 
 
 /**
- * Check whether the process is running
- * @param s The service being checked
- * @return The PID of the running running process or 0 if the process is not running.
- */
-int Util_isProcessRunning(Service_T s);
-
-
-/**
- * Compute an uptime string based on the delta time in seconds. The
- * caller must free the returned string.
- * @param delta seconds.
- * @param sep string separator
- * @return an uptime string
- */
-char *Util_getUptime(time_t delta, char *sep);
-
-
-/**
  * Returns true if url contains url safe characters otherwise false
  * @param url an url string to test
  * @return true if url is url safe otherwise false
@@ -234,13 +216,6 @@ char *Util_urlDecode(char *url);
  * @return the escaped string
  */
 char *Util_encodeServiceName(char *name);
-
-
-/**
- * @return a Basic Authentication Authorization string (RFC 2617),
- * with credentials from the Run object, NULL if credentials are not defined.
- */
-char *Util_getBasicAuthHeaderMonit();
 
 
 /**
@@ -419,28 +394,11 @@ char *Util_portDescription(Port_T p, char *buf, int bufsize);
 
 
 /**
- * Returns the FQDN hostname or fallback to gethostname() output
- * @param buf the character array for hostname
- * @param len the length of buf
- * @return zero on success
- */
-int Util_getfqdnhostname(char *buf, unsigned len);
-
-
-/**
  * Return string presentation of TIME_* unit
  *  @param time The TIME_* unit (see monit.h)
  *  @return string
  */
 const char *Util_timestr(int time);
-
-
-/**
- * Parse the response from Monit HTTP interface.
- * @param S Socket reference
- * @exception IOException in the case of communication error or AssertException if monit returned application error.
- */
-void Util_parseMonitHttpResponse(Socket_T S);
 
 
 #endif

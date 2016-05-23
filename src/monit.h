@@ -158,6 +158,7 @@ typedef enum {
 #define PROGRAM_TIMEOUT    300
 
 
+//FIXME: refactor Run_Flags to bit field
 typedef enum {
         Run_Once                 = 0x1,                   /**< Run Monit only once */
         Run_Foreground           = 0x2,                 /**< Don't daemonize Monit */ //FIXME: cleanup: Run_Foreground and Run_Daemon are mutually exclusive => no need for 2 flags
@@ -171,7 +172,8 @@ typedef enum {
         Run_MmonitCredentials    = 0x200,      /**< Should set M/Monit credentials */
         Run_Stopped              = 0x400,                          /**< Stop Monit */
         Run_DoReload             = 0x800,                        /**< Reload Monit */
-        Run_DoWakeup             = 0x1000                        /**< Wakeup Monit */
+        Run_DoWakeup             = 0x1000,                       /**< Wakeup Monit */
+        Run_Batch                = 0x2000                      /**< CLI batch mode */
 } __attribute__((__packed__)) Run_Flags;
 
 
@@ -206,7 +208,9 @@ typedef enum {
 
 typedef enum {
         Operator_Less = 0,
+        Operator_LessOrEqual,
         Operator_Greater,
+        Operator_GreaterOrEqual,
         Operator_Equal,
         Operator_NotEqual,
         Operator_Changed
@@ -246,9 +250,15 @@ typedef enum {
 
 typedef enum {
         Monitor_Active = 0,
-        Monitor_Passive,
-        Monitor_Manual
+        Monitor_Passive
 } __attribute__((__packed__)) Monitor_Mode;
+
+
+typedef enum {
+        Onreboot_Start = 0,
+        Onreboot_Nostart,
+        Onreboot_Laststate
+} __attribute__((__packed__)) Onreboot_Type;
 
 
 typedef enum {
@@ -275,7 +285,8 @@ typedef enum {
         Service_System,
         Service_Fifo,
         Service_Program,
-        Service_Net
+        Service_Net,
+        Service_Last = Service_Net
 } __attribute__((__packed__)) Service_Type;
 
 
@@ -329,18 +340,6 @@ typedef enum {
 
 
 typedef enum {
-        Level_Full = 0,
-        Level_Summary
-} __attribute__((__packed__)) Level_Type;
-
-
-typedef enum {
-        Color_Disabled = 0,
-        Color_Enabled
-} __attribute__((__packed__)) Color_Type;
-
-
-typedef enum {
         Handler_Succeeded = 0x0,
         Handler_Alert     = 0x1,
         Handler_Mmonit    = 0x2,
@@ -355,10 +354,6 @@ typedef enum {
 #define ICMP_SIZE 64
 #define ICMP_MAXSIZE 1500
 #define ICMP_ATTEMPT_COUNT 3
-
-
-#define LEVEL_NAME_FULL    "full"
-#define LEVEL_NAME_SUMMARY "summary"
 
 
 /* Default limits */
@@ -495,6 +490,7 @@ typedef struct mymail {
         Address_T replyto;                          /**< Optional reply-to address */
         char *subject;                                       /**< The mail subject */
         char *message;                                       /**< The mail message */
+        char *host;                                             /**< FQDN hostname */
         unsigned int events;  /*< Events for which this mail object should be sent */
         unsigned int reminder;              /*< Send error reminder each Xth cycle */
 
@@ -527,57 +523,26 @@ typedef struct myauthentication {
 } *Auth_T;
 
 
-/** Defines process tree - data storage backend */
-typedef struct myprocesstree {
-        boolean_t visited;
-        boolean_t zombie;
-        pid_t pid;
-        pid_t ppid;
-        int threads;
-        int parent;
-        struct {
-                int uid;
-                int euid;
-                int gid;
-        } cred;
-        struct {
-                float usage;
-                float usage_total;
-                double time;                                     /**< 1/10 seconds */
-        } cpu;
-        struct {
-                int count;
-                int total;
-                int *list;
-        } children;
-        struct {
-                uint64_t usage;
-                uint64_t usage_total;
-        } memory;
-        time_t uptime;
-        char *cmdline;
-} ProcessTree_T;
-
-
 /** Defines data for systemwide statistic */
 //FIXME: structurize the data
 typedef struct mysysteminfo {
-        int cpus;                                              /**< Number of CPUs */
-        float total_mem_percent;       /**< Total real memory in use in the system */
-        float total_swap_percent;             /**< Total swap in use in the system */
-        float total_cpu_user_percent;    /**< Total CPU in use in user space (pct.)*/
-        float total_cpu_syst_percent;  /**< Total CPU in use in kernel space (pct.)*/
-        float total_cpu_wait_percent;       /**< Total CPU in use in waiting (pct.)*/
-        size_t argmax;                          /**< Program arguments maximum [B] */
-        uint64_t mem_max;                          /**< Maximal system real memory */
-        uint64_t swap_max;                                          /**< Swap size */
-        uint64_t total_mem;            /**< Total real memory in use in the system */
-        uint64_t total_swap;                  /**< Total swap in use in the system */
-        double loadavg[3];                                /**< Load average triple */
-        struct utsname uname;        /**< Platform information provided by uname() */
-        struct timeval collected;                    /**< When were data collected */
-        double time;                                             /**< 1/10 seconds */
-        double time_prev;                                        /**< 1/10 seconds */
+        int cpus;                                                                       /**< Number of CPUs */
+        float total_mem_percent;                                /**< Total real memory in use in the system */
+        float total_swap_percent;                                      /**< Total swap in use in the system */
+        float total_cpu_user_percent;                               /**< Total CPU in use in user space [%] */
+        float total_cpu_syst_percent;                             /**< Total CPU in use in kernel space [%] */
+        float total_cpu_wait_percent;                                  /**< Total CPU in use in waiting [%] */
+        size_t argmax;                                                   /**< Program arguments maximum [B] */
+        uint64_t mem_max;                                                   /**< Maximal system real memory */
+        uint64_t swap_max;                                                                   /**< Swap size */
+        uint64_t total_mem;                                     /**< Total real memory in use in the system */
+        uint64_t total_swap;                                           /**< Total swap in use in the system */
+        double loadavg[3];                                                         /**< Load average triple */
+        struct utsname uname;                                 /**< Platform information provided by uname() */
+        struct timeval collected;                                             /**< When were data collected */
+        uint64_t booted; /**< System boot time (seconds since UNIX epoch, using platform-agnostic uint64_t) */
+        double time;                                                                      /**< 1/10 seconds */
+        double time_prev;                                                                 /**< 1/10 seconds */
 } SystemInfo_T;
 
 
@@ -1025,6 +990,7 @@ typedef struct myservice {
         Service_Type type;                             /**< Monitored service type */
         Monitor_State monitor;                             /**< Monitor state flag */
         Monitor_Mode mode;                    /**< Monitoring mode for the service */
+        Onreboot_Type onreboot;                                /**< On reboot mode */
         Action_Type doaction;                 /**< Action scheduled by http thread */
         int  ncycle;                          /**< The number of the current cycle */
         int  nstart;           /**< The number of current starts with this service */
@@ -1203,11 +1169,10 @@ extern Service_T      servicelist;
 extern Service_T      servicelist_conf;
 extern ServiceGroup_T servicegrouplist;
 extern SystemInfo_T   systeminfo;
-extern ProcessTree_T *ptree;
-extern int            ptreesize;
 
 extern char *actionnames[];
 extern char *modenames[];
+extern char *onrebootnames[];
 extern char *checksumnames[];
 extern char *operatornames[];
 extern char *operatorshortnames[];
@@ -1231,9 +1196,7 @@ extern char *sslnames[];
 boolean_t parse(char *);
 boolean_t control_service(const char *, Action_Type);
 boolean_t control_service_string(List_T, const char *);
-boolean_t control_service_daemon(List_T, const char *);
 void  spawn(Service_T, command_t, Event_T);
-boolean_t status(const char *, const char *, const char *);
 boolean_t log_init();
 void  LogEmergency(const char *, ...) __attribute__((format (printf, 1, 2)));
 void  LogAlert(const char *, ...) __attribute__((format (printf, 1, 2)));
@@ -1274,8 +1237,7 @@ State_Type check_fifo(Service_T);
 State_Type check_program(Service_T);
 State_Type check_net(Service_T);
 int  check_URL(Service_T s);
-void status_xml(StringBuffer_T, Event_T, Level_Type, int, const char *);
-Handler_Type handle_mmonit(Event_T);
+void status_xml(StringBuffer_T, Event_T, int, const char *);
 boolean_t  do_wakeupcall();
 
 #endif

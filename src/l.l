@@ -69,8 +69,6 @@ struct buffer_stack_s {
         YY_BUFFER_STATE buffer;
 } buffer_stack[MAX_STACK_DEPTH];
 
-extern List_T included;
-
 int lineno = 1;
 int arglineno = 1;
 char *currentfile = NULL;
@@ -106,40 +104,42 @@ static URL_T create_URL(char *proto);
 
 %}
 
-ws          [ \r\t]+
-wws         [ \r\t;,()]+
-number      [0-9]+
-real        [0-9]+([.][0-9]+)?
-str         [^\000-\041@:{}"';(),%]+
-address     [^\000-\041<>{}\[\]]+
-addrname    [^\000-\037@<>{}\[\]]+
-hostname    {str}(\.{str})*
-greater     ("more"|"greater"|"gt"|">")
-less        ("less"|"lt"|"<")
-equal       ("equal"|"eq"|"=="|"=")
-notequal    ("notequal"|"ne"|"!=")
-loadavg1    load(avg)[ ]*(\([ ]*1[ ]*(m|min)?[ ]*\))?
-loadavg5    load(avg)[ ]*\([ ]*5[ ]*(m|min)?[ ]*\)
-loadavg15   load(avg)[ ]*\([ ]*15[ ]*(m|min)?[ ]*\)
-cpuuser     cpu[ ]*(usage)*[ ]*\([ ]*(us|usr|user)?[ ]*\)
-cpusyst     cpu[ ]*(usage)*[ ]*\([ ]*(sy|sys|system)?[ ]*\)
-cpuwait     cpu[ ]*(usage)*[ ]*\([ ]*(wa|wait)?[ ]*\)
-startarg    start{ws}?(program)?{ws}?([=]{ws})?["]
-stoparg     stop{ws}?(program)?{ws}?([=]{ws})?["]
-restartarg  restart{ws}?(program)?{ws}?([=]{ws})?["]
-execarg     exec(ute)?{ws}?["]
-pathtokarg  path{ws}?["]
-percent     ("percent"|"%")
-byte        ("byte"|"bytes"|"b")("/s")?
-kilobyte    ("kilobyte"|"kilobytes"|"kb")("/s")?
-megabyte    ("megabyte"|"megabytes"|"mb")("/s")?
-gigabyte    ("gigabyte"|"gigabytes"|"gb")("/s")?
-millisecond ("millisecond"|"milliseconds"|"ms")
-second      ("second"|"seconds"|"s")
-minute      ("minute"|"minutes"|"m")
-hour        ("hour"|"hours"|"h")
-day         ("day"|"days")
-month       ("month"|"months")
+ws             [ \r\t]+
+wws            [ \r\t;,()]+
+number         [0-9]+
+real           [0-9]+([.][0-9]+)?
+str            [^\000-\041@:{}"';(),%]+
+address        [^\000-\041<>{}\[\]]+
+addrname       [^\000-\037@<>{}\[\]]+
+hostname       {str}(\.{str})*
+greater        ("more"|"greater"|"gt"|">")
+greaterorequal ("ge"|">=")
+less           ("less"|"lt"|"<")
+lessorequal    ("le"|"<=")
+equal          ("equal"|"eq"|"=="|"=")
+notequal       ("notequal"|"ne"|"!=")
+loadavg1       load(avg)[ ]*(\([ ]*1[ ]*(m|min)?[ ]*\))?
+loadavg5       load(avg)[ ]*\([ ]*5[ ]*(m|min)?[ ]*\)
+loadavg15      load(avg)[ ]*\([ ]*15[ ]*(m|min)?[ ]*\)
+cpuuser        cpu[ ]*(usage)*[ ]*\([ ]*(us|usr|user)?[ ]*\)
+cpusyst        cpu[ ]*(usage)*[ ]*\([ ]*(sy|sys|system)?[ ]*\)
+cpuwait        cpu[ ]*(usage)*[ ]*\([ ]*(wa|wait)?[ ]*\)
+startarg       start{ws}?(program)?{ws}?([=]{ws})?["]
+stoparg        stop{ws}?(program)?{ws}?([=]{ws})?["]
+restartarg     restart{ws}?(program)?{ws}?([=]{ws})?["]
+execarg        exec(ute)?{ws}?["]
+pathtokarg     path{ws}?["]
+percent        ("percent"|"%")
+byte           ("byte"|"bytes"|"b")("/s")?
+kilobyte       ("kilobyte"|"kilobytes"|"kb")("/s")?
+megabyte       ("megabyte"|"megabytes"|"mb")("/s")?
+gigabyte       ("gigabyte"|"gigabytes"|"gb")("/s")?
+millisecond    ("millisecond"|"milliseconds"|"ms")
+second         ("second"|"seconds"|"s")
+minute         ("minute"|"minutes"|"m")
+hour           ("hour"|"hours"|"h")
+day            ("day"|"days")
+month          ("month"|"months")
 
 %x ARGUMENT_COND DEPEND_COND SERVICE_COND URL_COND ADDRESS_COND STRING_COND EVERY_COND HTTP_HEADER_COND INCLUDE
 
@@ -206,6 +206,8 @@ cacertificatepath { return CACERTIFICATEPATH; }
 set               { return SET; }
 daemon            { return DAEMON; }
 delay             { return DELAY; }
+terminal          { return TERMINAL; }
+batch             { return BATCH; }
 logfile           { return LOGFILE; }
 syslog            { return SYSLOG; }
 facility          { return FACILITY; }
@@ -302,6 +304,9 @@ mode              { return MODE; }
 active            { return ACTIVE; }
 passive           { return PASSIVE; }
 manual            { return MANUAL; }
+onreboot          { return ONREBOOT; }
+nostart           { return NOSTART; }
+laststate         { return LASTSTATE; }
 uid               { return UID; }
 euid              { return EUID; }
 gid               { return GID; }
@@ -403,7 +408,9 @@ fips              { return FIPS; }
 {cpusyst}         { return CPUSYSTEM; }
 {cpuwait}         { return CPUWAIT; }
 {greater}         { return GREATER; }
+{greaterorequal}  { return GREATEROREQUAL; }
 {less}            { return LESS; }
+{lessorequal}     { return LESSOREQUAL; }
 {equal}           { return EQUAL; }
 {notequal}        { return NOTEQUAL; }
 {millisecond}     { return MILLISECOND; }
@@ -945,10 +952,16 @@ static char *handle_quoted_string(char *string) {
 
 
 static void _include(const char *path) {
-        for (list_t l = included->head; l; l = l->next)
-                if (! Str_cmp((char *)(l->e), path))
+        if (Str_cmp(Run.files.control, path) == 0) {
+                yywarning("Include loop detected when trying to include %s", path);
+                return;
+        }
+        for (int i = 0; i < buffer_stack_ptr; i++) {
+                if (Str_cmp(buffer_stack[i].currentfile, path) == 0) {
+                        yywarning("Include loop detected when trying to include %s", path);
                         return;
-        List_append(included, Str_dup(path));
+                }
+        }
         FILE *yyin = fopen(path, "r");
         if (! yyin)
                 yyerror("Cannot include file '%s' -- %s", path, STRERROR);
@@ -974,7 +987,7 @@ static void include_file(char *pattern) {
 
 
 static void push_buffer_state(YY_BUFFER_STATE buffer, char *filename) {
-        if ( buffer_stack_ptr >= MAX_STACK_DEPTH ) {
+        if (buffer_stack_ptr >= MAX_STACK_DEPTH) {
                 yyerror("include files limit reached");
                 exit( 1 );
         }

@@ -74,7 +74,7 @@
 #endif
 
 #include "monit.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "process_sysdep.h"
 
 
@@ -117,6 +117,15 @@ boolean_t init_process_info_sysdep(void) {
         if (sysctl(mib, 2, &pagesize, &len, NULL, 0) == -1) {
                 DEBUG("system statistic error -- cannot get memory page size: %s\n", STRERROR);
                 return false;
+        }
+
+        struct timeval booted;
+        size_t size = sizeof(booted);
+        if (sysctlbyname("kern.boottime", &booted, &size, NULL, 0) == -1) {
+                DEBUG("system statistics error -- sysctl kern.boottime failed: %s\n", STRERROR);
+                return false;
+        } else {
+                systeminfo.booted = booted.tv_sec;
         }
 
         return true;

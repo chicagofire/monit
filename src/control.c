@@ -53,6 +53,7 @@
 #endif
 
 #include "monit.h"
+#include "ProcessTree.h"
 #include "net.h"
 #include "socket.h"
 #include "event.h"
@@ -167,10 +168,14 @@ static Process_Status _waitProcessStart(Service_T s, int64_t *timeout) {
         long wait = RETRY_INTERVAL;
         do {
                 Time_usleep(wait);
-                if (Util_isProcessRunning(s))
+                pid_t pid = ProcessTree_findProcess(s);
+                if (pid) {
+                        ProcessTree_init(ProcessEngine_None);
+                        ProcessTree_updateProcess(s, pid);
                         return Process_Started;
+                }
                 *timeout -= wait;
-                wait = wait < 1000000 ? wait * 2 : 1000000; // double the wait during each cycle until 1s is reached (Util_isProcessRunning can be heavy and we don't want to drain power every 100ms on mobile devices)
+                wait = wait < 1000000 ? wait * 2 : 1000000; // double the wait during each cycle until 1s is reached (ProcessTree_findProcess can be heavy and we don't want to drain power every 100ms on mobile devices)
         } while (*timeout > 0 && ! (Run.flags & Run_Stopped));
         return Process_Stopped;
 }
@@ -233,7 +238,7 @@ static boolean_t _doStart(Service_T s) {
         }
         if (rv) {
                 if (s->start) {
-                        if (s->type != Service_Process || ! Util_isProcessRunning(s)) {
+                        if (s->type != Service_Process || ! ProcessTree_findProcess(s)) {
                                 LogInfo("'%s' start: %s\n", s->name, s->start->arg[0]);
                                 char msg[STRLEN];
                                 int64_t timeout = s->start->timeout * USEC_PER_SEC;
@@ -288,7 +293,7 @@ static boolean_t _doStop(Service_T s, boolean_t unmonitor) {
                         char msg[STRLEN];
                         int64_t timeout = s->stop->timeout * USEC_PER_SEC;
                         if (s->type == Service_Process) {
-                                int pid = Util_isProcessRunning(s);
+                                int pid = ProcessTree_findProcess(s);
                                 if (pid) {
                                         exitStatus = _executeStop(s, msg, sizeof(msg), &timeout);
                                         rv = _waitProcessStop(pid, &timeout) == Process_Stopped ? true : false;
@@ -412,79 +417,6 @@ static boolean_t _doDepend(Service_T s, Action_Type action, boolean_t unmonitor)
 
 
 /* ------------------------------------------------------------------ Public */
-
-
-/**
- * Pass the action for given services list to a monit daemon via HTTP interface
- * @param services A services list
- * @param action A string describing the action to execute
- * @return number of errors
- */
-boolean_t control_service_daemon(List_T services, const char *action) {
-        ASSERT(services);
-        ASSERT(action);
-        if (Util_getAction(action) == Action_Ignored) {
-                LogError("Invalid action %s\n", action);
-                return 1;
-        }
-        Socket_T socket = NULL;
-        if (Run.httpd.flags & Httpd_Net) {
-                // FIXME: Monit HTTP support IPv4 only currently ... when IPv6 is implemented change the family to Socket_Ip
-                SslOptions_T options = {
-                        .flags = (Run.httpd.flags & Httpd_Ssl) ? SSL_Enabled : SSL_Disabled,
-                        .clientpemfile = Run.httpd.socket.net.ssl.clientpem,
-                        .allowSelfSigned = Run.httpd.flags & Httpd_AllowSelfSignedCertificates
-                };
-                socket = Socket_create(Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "localhost", Run.httpd.socket.net.port, Socket_Tcp, Socket_Ip4, options, Run.limits.networkTimeout);
-        } else if (Run.httpd.flags & Httpd_Unix) {
-                socket = Socket_createUnix(Run.httpd.socket.unix.path, Socket_Tcp, Run.limits.networkTimeout);
-        } else {
-                LogError("Action %s not possible - monit http interface is not enabled, please add the 'set httpd' statement\n", action);
-        }
-        if (! socket)
-                return 1;
-
-        /* Prepare request */
-        StringBuffer_T sb = StringBuffer_create(64);
-        StringBuffer_append(sb, "action=%s", action);
-        for (list_t s = services->head; s; s = s->next)
-                StringBuffer_append(sb, "&service=%s", (char *)s->e);
-
-        /* Send request */
-        int errors = 0;
-        char *auth = Util_getBasicAuthHeaderMonit();
-        if (Socket_print(socket,
-                         "POST /_doaction HTTP/1.0\r\n"
-                         "Content-Type: application/x-www-form-urlencoded\r\n"
-                         "Content-Length: %d\r\n"
-                         "%s"
-                         "\r\n"
-                         "%s",
-                         StringBuffer_length(sb),
-                         auth ? auth : "",
-                         StringBuffer_toString(sb)) < 0)
-        {
-                errors++;
-                LogError("Cannot send the command '%s' to the monit daemon -- %s\n", action ? action : "null", STRERROR);
-                goto err;
-        }
-
-        TRY
-        {
-                Util_parseMonitHttpResponse(socket);
-        }
-        ELSE
-        {
-                LogError("%s\n", Exception_frame.message);
-                errors++;
-        }
-        END_TRY;
-err:
-        FREE(auth);
-        StringBuffer_free(&sb);
-        Socket_free(&socket);
-        return errors;
-}
 
 
 /**

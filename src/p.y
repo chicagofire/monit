@@ -113,12 +113,16 @@
 #include <regex.h>
 #endif
 
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+
 #include "net.h"
 #include "monit.h"
 #include "protocol.h"
 #include "engine.h"
 #include "alert.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "device.h"
 #include "processor.h"
 
@@ -160,8 +164,6 @@ extern char *argyytext;
 extern char *currentfile;
 extern char *argcurrentfile;
 extern int buffer_stack_ptr;
-
-List_T included = NULL;
 
 /* Local variables */
 static int cfg_errflag = 0;
@@ -310,7 +312,7 @@ static int verifyMaxForward(int);
 }
 
 %token IF ELSE THEN OR FAILED
-%token SET LOGFILE FACILITY DAEMON SYSLOG MAILSERVER HTTPD ALLOW REJECTOPT ADDRESS INIT
+%token SET LOGFILE FACILITY DAEMON SYSLOG MAILSERVER HTTPD ALLOW REJECTOPT ADDRESS INIT TERMINAL BATCH
 %token READONLY CLEARTEXT MD5HASH SHA1HASH CRYPT DELAY
 %token PEMFILE ENABLE DISABLE SSL CLIENTPEMFILE ALLOWSELFCERTIFICATION SELFSIGNED VERIFY CERTIFICATE CACERTIFICATEFILE CACERTIFICATEPATH VALID
 %token INTERFACE LINK PACKET BYTEIN BYTEOUT PACKETIN PACKETOUT SPEED SATURATION UPLOAD DOWNLOAD TOTAL
@@ -331,7 +333,7 @@ static int verifyMaxForward(int);
 %token CHECKPROC CHECKFILESYS CHECKFILE CHECKDIR CHECKHOST CHECKSYSTEM CHECKFIFO CHECKPROGRAM CHECKNET
 %token THREADS CHILDREN STATUS ORIGIN VERSIONOPT
 %token RESOURCE MEMORY TOTALMEMORY LOADAVG1 LOADAVG5 LOADAVG15 SWAP
-%token MODE ACTIVE PASSIVE MANUAL CPU TOTALCPU CPUUSER CPUSYSTEM CPUWAIT
+%token MODE ACTIVE PASSIVE MANUAL ONREBOOT NOSTART LASTSTATE CPU TOTALCPU CPUUSER CPUSYSTEM CPUWAIT
 %token GROUP REQUEST DEPENDS BASEDIR SLOT EVENTQUEUE SECRET HOSTHEADER
 %token UID EUID GID MMONIT INSTANCE USERNAME PASSWORD
 %token TIMESTAMP CHANGED MILLISECOND SECOND MINUTE HOUR DAY MONTH
@@ -347,7 +349,7 @@ static int verifyMaxForward(int);
 %token <number> MAXFORWARD
 %token FIPS
 
-%left GREATER LESS EQUAL NOTEQUAL
+%left GREATER GREATEROREQUAL LESS LESSOREQUAL EQUAL NOTEQUAL
 
 
 %%
@@ -362,6 +364,7 @@ statement_list  : statement
 statement       : setalert
                 | setssl
                 | setdaemon
+                | setterminal
                 | setlog
                 | seteventqueue
                 | setmmonits
@@ -382,7 +385,7 @@ statement       : setalert
                 | checkhost opthostlist
                 | checksystem optsystemlist
                 | checkfifo optfifolist
-                | checkprogram optstatuslist
+                | checkprogram optprogramlist
                 | checknet optnetlist
                 ;
 
@@ -407,6 +410,7 @@ optproc         : start
                 | alert
                 | every
                 | mode
+                | onreboot
                 | group
                 | depend
                 | resourceprocess
@@ -431,6 +435,7 @@ optfile         : start
                 | size
                 | match
                 | mode
+                | onreboot
                 | group
                 | depend
                 ;
@@ -449,6 +454,7 @@ optfilesys      : start
                 | uid
                 | gid
                 | mode
+                | onreboot
                 | group
                 | depend
                 | inode
@@ -472,6 +478,7 @@ optdir          : start
                 | uid
                 | gid
                 | mode
+                | onreboot
                 | group
                 | depend
                 ;
@@ -490,6 +497,7 @@ opthost         : start
                 | alert
                 | every
                 | mode
+                | onreboot
                 | group
                 | depend
                 ;
@@ -508,6 +516,8 @@ optnet          : start
                 | download
                 | actionrate
                 | every
+                | mode
+                | onreboot
                 | alert
                 | group
                 | depend
@@ -523,9 +533,12 @@ optsystem       : start
                 | actionrate
                 | alert
                 | every
+                | mode
+                | onreboot
                 | group
                 | depend
                 | resourcesystem
+                | uptime
                 ;
 
 optfifolist     : /* EMPTY */
@@ -544,20 +557,23 @@ optfifo         : start
                 | uid
                 | gid
                 | mode
+                | onreboot
                 | group
                 | depend
                 ;
 
-optstatuslist   : /* EMPTY */
-                | optstatuslist optstatus
+optprogramlist  : /* EMPTY */
+                | optprogramlist optprogram
                 ;
 
-optstatus       : start
+optprogram      : start
                 | stop
                 | restart
                 | actionrate
                 | alert
                 | every
+                | mode
+                | onreboot
                 | group
                 | depend
                 | statusvalue
@@ -583,6 +599,11 @@ setdaemon       : SET DAEMON NUMBER startdelay {
                       Run.polltime   = $3;
                       Run.startdelay = $<number>4;
                     }
+                  }
+                ;
+
+setterminal     : SET TERMINAL BATCH {
+                        Run.flags |= Run_Batch;
                   }
                 ;
 
@@ -1180,14 +1201,17 @@ checknet        : CHECKNET SERVICENAME ADDRESS STRING {
                 ;
 
 checksystem     : CHECKSYSTEM SERVICENAME {
-                    char hostname[STRLEN];
-                    if (Util_getfqdnhostname(hostname, sizeof(hostname))) {
-                      LogError("Cannot get system hostname\n");
-                      cfg_errflag++;
-                    }
-                    char *servicename = $<string>2;
-                    Util_replaceString(&servicename, "$HOST", hostname);
-                    Run.system = createservice(Service_System, servicename, Str_dup(""), check_system); // The name given in the 'check system' statement overrides system hostname
+                        char *servicename = $<string>2;
+                        if (Str_sub(servicename, "$HOST")) {
+                                char hostname[STRLEN];
+                                if (gethostname(hostname, sizeof(hostname))) {
+                                        LogError("System hostname error -- %s\n", STRERROR);
+                                        cfg_errflag++;
+                                } else {
+                                        Util_replaceString(&servicename, "$HOST", hostname);
+                                }
+                        }
+                        Run.system = createservice(Service_System, servicename, NULL, check_system); // The name given in the 'check system' statement overrides system hostname
                   }
                 ;
 
@@ -1199,14 +1223,14 @@ checkfifo       : CHECKFIFO SERVICENAME PATHTOK PATH {
 checkprogram    : CHECKPROGRAM SERVICENAME PATHTOK argumentlist programtimeout {
                         command_t c = command; // Current command
                         check_exec(c->arg[0]);
-                        createservice(Service_Program, $<string>2, Str_dup(c->arg[0]), check_program);
+                        createservice(Service_Program, $<string>2, NULL, check_program);
                         current->program->timeout = $<number>5;
                         current->program->output = StringBuffer_create(64);
                  }
                 | CHECKPROGRAM SERVICENAME PATHTOK argumentlist useroptionlist programtimeout {
                         command_t c = command; // Current command
                         check_exec(c->arg[0]);
-                        createservice(Service_Program, $<string>2, Str_dup(c->arg[0]), check_program);
+                        createservice(Service_Program, $<string>2, NULL, check_program);
                         current->program->timeout = $<number>6;
                         current->program->output = StringBuffer_create(64);
                  }
@@ -1924,15 +1948,27 @@ every           : EVERY NUMBER CYCLE {
                  }
                 ;
 
-mode            : MODE ACTIVE  {
-                    current->mode = Monitor_Active;
+mode            : MODE ACTIVE {
+                        current->mode = Monitor_Active;
                   }
                 | MODE PASSIVE {
-                    current->mode = Monitor_Passive;
+                        current->mode = Monitor_Passive;
                   }
-                | MODE MANUAL  {
-                    current->mode = Monitor_Manual;
-                    current->monitor = Monitor_Not;
+                | MODE MANUAL {
+                        // Deprecated since monit 5.18
+                        current->onreboot = Onreboot_Laststate;
+                  }
+                ;
+
+onreboot        : ONREBOOT START {
+                        current->onreboot = Onreboot_Start;
+                  }
+                | ONREBOOT NOSTART {
+                        current->onreboot = Onreboot_Nostart;
+                        current->monitor = Monitor_Not;
+                  }
+                | ONREBOOT LASTSTATE {
+                        current->onreboot = Onreboot_Laststate;
                   }
                 ;
 
@@ -2104,12 +2140,14 @@ timestamp       : IF TIMESTAMP operator NUMBER time rate1 THEN action1 recovery 
                   }
                 ;
 
-operator        : /* EMPTY */ { $<number>$ = Operator_Equal; }
-                | GREATER     { $<number>$ = Operator_Greater; }
-                | LESS        { $<number>$ = Operator_Less; }
-                | EQUAL       { $<number>$ = Operator_Equal; }
-                | NOTEQUAL    { $<number>$ = Operator_NotEqual; }
-                | CHANGED     { $<number>$ = Operator_Changed; }
+operator        : /* EMPTY */    { $<number>$ = Operator_Equal; }
+                | GREATER        { $<number>$ = Operator_Greater; }
+                | GREATEROREQUAL { $<number>$ = Operator_GreaterOrEqual; }
+                | LESS           { $<number>$ = Operator_Less; }
+                | LESSOREQUAL    { $<number>$ = Operator_LessOrEqual; }
+                | EQUAL          { $<number>$ = Operator_Equal; }
+                | NOTEQUAL       { $<number>$ = Operator_NotEqual; }
+                | CHANGED        { $<number>$ = Operator_Changed; }
                 ;
 
 time            : /* EMPTY */ { $<number>$ = Time_Second; }
@@ -2716,13 +2754,7 @@ boolean_t parse(char *controlfile) {
         LOCK(Run.mutex)
         {
                 preparse();
-                included = List_new();
-                List_append(included, Str_dup(controlfile));
                 yyparse();
-                char *include = NULL;
-                while ((include = List_pop(included)))
-                        FREE(include);
-                List_free(&included);
                 fclose(yyin);
                 postparse();
         }
@@ -2838,17 +2870,16 @@ static void postparse() {
         /* Add the default general system service if not specified explicitly: service name default to hostname */
         if (! Run.system) {
                 char hostname[STRLEN];
-                if (Util_getfqdnhostname(hostname, sizeof(hostname))) {
+                if (gethostname(hostname, sizeof(hostname))) {
                         LogError("Cannot get system hostname -- please add 'check system <name>'\n");
                         cfg_errflag++;
                 }
                 if (Util_existService(hostname)) {
                         LogError("'check system' not defined in control file, failed to add automatic configuration (service name %s is used already) -- please add 'check system <name>' manually\n", hostname);
                         cfg_errflag++;
-                } else {
-                        Run.system = createservice(Service_System, Str_dup(hostname), Str_dup(""), check_system);
-                        addservice(Run.system);
                 }
+                Run.system = createservice(Service_System, Str_dup(hostname), NULL, check_system);
+                addservice(Run.system);
         }
         addeventaction(&(Run.system->action_MONIT_START), Action_Start, Action_Ignored);
         addeventaction(&(Run.system->action_MONIT_STOP), Action_Stop,  Action_Ignored);
@@ -2906,7 +2937,6 @@ static boolean_t _parseOutgoingAddress(const char *ip, Outgoing_T *outgoing) {
  */
 static Service_T createservice(Service_Type type, char *name, char *value, State_Type (*check)(Service_T s)) {
         ASSERT(name);
-        ASSERT(value);
 
         check_name(name);
 
@@ -2928,11 +2958,12 @@ static Service_T createservice(Service_Type type, char *name, char *value, State
         }
 
         /* Set default values */
-        current->monitor = Monitor_Init;
-        current->mode    = Monitor_Active;
-        current->name    = name;
-        current->check   = check;
-        current->path    = value;
+        current->mode     = Monitor_Active;
+        current->monitor  = Monitor_Init;
+        current->onreboot = Onreboot_Start;
+        current->name     = name;
+        current->check    = check;
+        current->path     = value;
 
         /* Initialize general event handlers */
         addeventaction(&(current)->action_DATA,     Action_Alert,     Action_Alert);
@@ -2970,14 +3001,20 @@ static void addservice(Service_T s) {
                                 cfg_errflag++;
                         }
                         // Create the Command object
-                        s->program->C = Command_new(s->path, NULL);
-                        // Append any arguments
-                        for (int i = 1; i < s->program->args->length; i++)
+                        char program[PATH_MAX];
+                        strncpy(program, s->program->args->arg[0], sizeof(program) - 1);
+                        s->program->C = Command_new(program, NULL);
+                        for (int i = 1; i < s->program->args->length; i++) {
                                 Command_appendArgument(s->program->C, s->program->args->arg[i]);
+                                snprintf(program + strlen(program), sizeof(program) - strlen(program) - 1, " %s", s->program->args->arg[i]);
+                        }
+                        s->path = Str_dup(program);
                         if (s->program->args->has_uid)
                                 Command_setUid(s->program->C, s->program->args->uid);
                         if (s->program->args->has_gid)
                                 Command_setGid(s->program->C, s->program->args->gid);
+                        // Set environment
+                        Command_setEnv(s->program->C, "MONIT_SERVICE", s->name);
                         break;
                 case Service_Net:
                         if (! s->linkstatuslist) {

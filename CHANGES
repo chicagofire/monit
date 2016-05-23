@@ -4,19 +4,83 @@
 
 Version 5.18
 
-New: The service status in monit command-line interface is now colorized.
+New: The service status, summary and procmatch CLI commands are now colorized and use a
+tabular format. To disable colors and display nontabular output, use a new -B command-line
+option or the "set terminal batch" statement in the monit configuration file.
+
+New: If the service has multiple errors, the service status will describe all errors (originally
+monit displayed only one error)
+
+New: Issue #340: New CLI command for services state overview added:
+    monit report [up | down | initialising | unmonitored | total]
+Output example:
+    $ monit report
+    up:            11 (39.3%)
+    down:          16 (57.1%)
+    initialising:   0 (0.0%)
+    unmonitored:    1 (3.6%)
+    total:         28 services
+
+New: Issue #344: Added MONIT_SERVICE environment variable to a check program context.
+
+New: A new ONREBOOT statement for service startup control on system reboot was added. The following
+modes are available:
+    onreboot start     ... always start the service automatically after reboot (DEFAULT mode)
+    onreboot nostart   ... never start the service automatically after reboot
+    onreboot laststate ... the service state is persistent across reboot (stopped before reboot => stopped after reboot and vice versa)
+
+New: The "mode" statement options are reduced to "active" (automatic service restarts allowed
+on error) and "passive" (no restart allowed on error). The "manual" option is deprecated (but
+still supported for backward compatibility) and replaced by the new "onreboot laststate" statement.
+
+New: The system status shows boot time and uptime in monit CLI and HTTP GUI.
+
+New: Added a system uptime test. Example:
+    check system $HOST
+        if uptime > 180 days then alert
+
+New: Added ">=" and "<=" operators support to comparison tests.
+
+Fixed: Added missing "mode" statement support to system, status and network checks.
 
 Fixed: If the "check program" script or start/stop/restart program timed out, monit killed it,
 but a zombie was left. Thanks to Guillem Jover for patch.
+
+Fixed: Issue #166: HTTP GUI: Added system uptime to the status details of system service and dropped
+the confusing monit's own uptime from the home page header.
 
 Fixed: Issue #335: The send/expect test now provides context of the failed pattern in the error
 message.
 
 Fixed: Issue #336: CHECK PROGRAM timeout parsing issue when run as another user
 
-Fixed: When the pattern based process check finds a matching process, it will select the top-most
-parent process if it matches the pattern too. Originally the pattern based process check was
-first-match based only.
+Fixed: Issue #350: If the "check program" used a custom schedule (based on "every" statement),
+the exit value evaluation and check for program timeout was deferred until the next cycle, which
+matched the schedule. Monit now collects the exit value ASAP (i.e. next cycle) and kills the program
+if timed out.
+
+Fixed: Issue #351: Duplicate "set httpd" statement's "allow" option cause startup to fail
+
+Fixed: Issue #354: If eventqueue directory contains also other files (like monit state file), monit
+will not log error anymore (just warning when debug mode is enabled).
+
+Fixed: Issue #358: Drop the "last started" report for a 'check program'.
+
+Fixed: Issue #360: Improve the include files recursive loop detection (introduced in fix for issue #270,
+which skipped file inclusion if it was included already) to allow to include the file multiple times if
+it doesn't create a loop. It is again possible to move common fragments of service configuration to the
+include file, which is reused in the context of different services.
+
+Fixed: Issue #367: When process is restarted, monit showed the process as Running, but no process info such
+as PID was displayed until the service passed regular validation cycle.
+
+Fixed: Issue #370: IMAP protocol test supports greetings up to 512 characters now.
+
+Fixed: Issue #372: Show full "check program" value in GUI, instead of just first part of the program path.
+
+Fixed: When the pattern based process check finds multiple matching processes, it will select the
+top-most matching parent with highest uptime (oldest). Originally the pattern based process check
+was first-match based only.
 
 Fixed: RPM package template.
 
@@ -71,6 +135,8 @@ may fail.
 
 Fixed: Issue #329: The send/expect protocol test returned error if the target server sent more
 data then buffer limit.
+
+Fixed: Issue #356: Monit start or reload can be slow int the case of DNS problem.
 
 Fixed: A 32-bit platform with more then 4GB of RAM reported wrong system memory and
 swap value (regression in Monit 5.16).

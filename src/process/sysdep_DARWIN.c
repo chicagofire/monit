@@ -50,7 +50,7 @@
 #endif
 
 #include "monit.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "process_sysdep.h"
 
 
@@ -99,6 +99,15 @@ boolean_t init_process_info_sysdep(void) {
         if (sysctlbyname("kern.argmax", &systeminfo.argmax, &size, NULL, 0) == -1) {
                 DEBUG("system statistics error -- sysctl kern.argmax failed: %s\n", STRERROR);
                 return false;
+        }
+
+        struct timeval booted;
+        size = sizeof(booted);
+        if (sysctlbyname("kern.boottime", &booted, &size, NULL, 0) == -1) {
+                DEBUG("system statistics error -- sysctl kern.boottime failed: %s\n", STRERROR);
+                return false;
+        } else {
+                systeminfo.booted = booted.tv_sec;
         }
 
         return true;
@@ -176,17 +185,19 @@ int initprocesstree_sysdep(ProcessTree_T **reference, ProcessEngine_Flags pflags
                                 pt[i].cmdline = Str_dup(pinfo[i].kp_proc.p_comm);
                         }
                 }
-                struct proc_taskinfo tinfo;
-                int rv = proc_pidinfo(pt[i].pid, PROC_PIDTASKINFO, 0, &tinfo, sizeof(tinfo));
-                if (rv <= 0) {
-                        if (errno != EPERM)
-                                DEBUG("proc_pidinfo for pid %d failed -- %s\n", pt[i].pid, STRERROR);
-                } else if (rv < sizeof(tinfo)) {
-                        LogError("proc_pidinfo for pid %d -- invalid result size\n", pt[i].pid);
-                } else {
-                        pt[i].memory.usage = (uint64_t)tinfo.pti_resident_size;
-                        pt[i].cpu.time     = (double)(tinfo.pti_total_user + tinfo.pti_total_system) / 100000000.; // The time is in nanoseconds, we store it as 1/10s
-                        pt[i].threads      = tinfo.pti_threadnum;
+                if (! pt[i].zombie) {
+                        struct proc_taskinfo tinfo;
+                        int rv = proc_pidinfo(pt[i].pid, PROC_PIDTASKINFO, 0, &tinfo, sizeof(tinfo)); // If the process is zombie, skip this
+                        if (rv <= 0) {
+                                if (errno != EPERM)
+                                        DEBUG("proc_pidinfo for pid %d failed -- %s\n", pt[i].pid, STRERROR);
+                        } else if (rv < sizeof(tinfo)) {
+                                LogError("proc_pidinfo for pid %d -- invalid result size\n", pt[i].pid);
+                        } else {
+                                pt[i].memory.usage = (uint64_t)tinfo.pti_resident_size;
+                                pt[i].cpu.time     = (double)(tinfo.pti_total_user + tinfo.pti_total_system) / 100000000.; // The time is in nanoseconds, we store it as 1/10s
+                                pt[i].threads      = tinfo.pti_threadnum;
+                        }
                 }
         }
         if (pflags & ProcessEngine_CollectCommandLine) {

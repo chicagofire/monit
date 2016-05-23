@@ -135,6 +135,9 @@ B<-s> I<statefile>
    Write state information to this file. Or use I<"set
    statefile"> in monitrc.
 
+B<-B>
+   Batch command line mode (nontabular output with no colors)
+
 B<-I>
    Do not run in background (needed for run from init)
 
@@ -182,7 +185,7 @@ monitoring for them. If the group option is set (I<-g>), only
 start and enable monitoring of services in the named group ("all"
 is not required in this case).
 
-=item start name
+=item start <name>
 
 Start the named service and enable monitoring for it. The name is
 a service entry name from the monitrc file.
@@ -194,7 +197,7 @@ monitoring. If the group option is set, only stop and disable
 monitoring of the services in the named group ("all" is not
 required in this case).
 
-=item stop name
+=item stop <name>
 
 Stop the named service and disable its monitoring. The name is a
 service entry name from the monitrc file.
@@ -205,7 +208,7 @@ Stop and start I<all> services. If the group option is set, only
 restart the services in the named group ("all" is not required in
 this case).
 
-=item restart name
+=item restart <name>
 
 Restart the named service. The name is a service entry name from
 the monitrc file.
@@ -216,7 +219,7 @@ Enable monitoring of all services listed in the control file. If
 the group option is set, only start monitoring of services in the
 named group ("all" is not required in this case).
 
-=item monitor name
+=item monitor <name>
 
 Enable monitoring of the named service. The name is a service
 entry name from the monitrc file. Monit will also enable
@@ -228,7 +231,7 @@ Disable monitoring of all services listed in the control file. If
 the group option is set, only disable monitoring of services in
 the named group ("all" is not required in this case).
 
-=item unmonitor name
+=item unmonitor <name>
 
 Disable monitoring of the named service. The name is a service
 entry name from the monitrc file. Monit will also disable
@@ -241,6 +244,10 @@ Print service status information.
 =item summary [name]
 
 Print a short status summary.
+
+=item report [up | down | initialising | unmonitored | total]
+
+Report services state
 
 =item reload
 
@@ -256,7 +263,7 @@ Kill the Monit daemon process
 Check all services listed in the control file. This action is
 also the default behaviour when Monit runs in daemon mode.
 
-=item procmatch regex
+=item procmatch <regex>
 
 Allows for easy testing of pattern for process match check. The
 command takes regular expression as an argument and displays all
@@ -344,10 +351,10 @@ or does not contain the PID number of a running process, Monit will
 call the entry's start method if defined.
 
 <regex> is an alternative to using PID files and uses process name
-pattern matching to find the process to monitor. The first-match and
-top-most-parent is used, so this form of check is most useful if the
-process name is unique. Pid-file should be used where possible as it
-defines expected PID exactly. You can test if a process match a pattern
+pattern matching to find the process to monitor. The top-most matching
+parent with highest uptime is selected, so this form of check is most
+useful if the process name is unique. Pid-file should be used where possible
+as it defines expected PID exactly. You can test if a process match a pattern
 from the command-line using C<monit procmatch "regex-pattern">. This will
 lists all processes matching or not, the regex-pattern.
 
@@ -459,6 +466,21 @@ The format for logfile is:
 for example:
 
     [CET Jan  5 18:49:29] info : 'localhost' Monit started
+
+
+
+=head1 TERMINAL OUTPUT
+
+Monit uses ANSI escape sequences to colorise important parts
+of the command-line output, if the terminal supports colors,
+and UTF-8 box characters for tabular output.
+
+If you want to process the monit CLI output in a script, you
+can use either -B option or the following statement in the monit
+configuration file to disable the tabular output and colors
+completely:
+
+ SET TERMINAL BATCH
 
 
 
@@ -831,9 +853,10 @@ Authentication headers will be encrypted.
 =head4 Cleartext user and password
 
 Monit will use Basic Authentication if an allow statement contains a
-username and a password separated with a single ':' character. Special
-characters can be used, but for non-alphanumerics the password has to
-be quoted.
+username and a password separated with a single ':' character.
+
+Note: Special characters can be used, but for non-alphanumerics the
+password has to be quoted.
 
 Syntax:
 
@@ -918,6 +941,36 @@ A user is set to read-only by using the I<read-only> keyword
 B<after> username:password. In the above example the user I<hauk>
 is defined as a read-only user, while the I<admin> user has all
 access rights.
+
+
+=head1 CENTRAL MANAGEMENT OF MULTIPLE MONIT HOSTS WITH M/MONIT
+
+You can use L<M/Monit|https://mmonit.com> for central management of multiple
+Monit hosts and to keep event log, draw charts, trends and more.
+
+To send data to M/Monit, add the following statement:
+
+  SET MMONIT <url>
+
+Example:
+
+ set mmonit http://monit:monit@192.168.1.10:8080/collector
+
+Monit will register itself in M/Monit and will start sending service
+statistics (for charts) and events to M/Monit.
+
+By default Monit registers its own credentials from the SET HTTPD statement's
+ALLOW option, so M/Monit can communicate back to Monit (such as restart a specific service).
+
+It is possible to disable credentials registration, Monit will still be able
+to send statistics and events to M/Monit, but if you'll want to control some
+service remotely from M/Monit, you'll have to enter credentials manually. Example:
+
+ set mmonit http://monit:monit@192.168.1.10:8080/collector and register without credentials
+
+The password should be URL encoded if it contains URL-significant characters like ":", "?", "@".
+
+Important: always use M/Monit with HTTPS url scheme, so the communication is encrypted.
 
 
 =head1 ALERT MESSAGES
@@ -1403,38 +1456,42 @@ statement:
 
 =head1 SERVICE MONITORING MODE
 
-Monit supports three monitoring modes per service: I<active>,
-I<passive> and I<manual>.
+Monit supports two monitoring modes: I<active> and I<passive>.
 
 Syntax:
 
-  MODE <ACTIVE | PASSIVE | MANUAL>
+  MODE <ACTIVE | PASSIVE>
 
 In I<active> mode (the default), Monit will pro-actively monitor a
-service and in case of problems raise alerts and/or restart
-the service.
+service and in case of problems raise alerts and restart the service.
 
-In I<passive> mode, Monit will passively monitor a service and will
-raise alerts, but will B<not> try to fix a problem by executing
-I<start>, I<stop> or I<restart>.
+The I<passive> mode is similar to the I<active> mode, except if the
+service fails, monit will B<not> try to fix a problem by restarting
+the service and will raise alerts only.
 
-In I<manual> mode, Monit will enter I<active> mode I<only> if a
-service was started via Monit:
 
-  monit start <servicename>
+=head1 SYSTEM REBOOT AND SERVICE STARTUP
 
-Use "monit stop <servicename>" to stop the service and take it out
-of Monit's control. The manual mode can be used to build a simple
-cluster with active/passive HA-services.
+Monit supports three reboot modes: I<start>, I<nostart> and I<laststate>.
 
-A service's monitoring state is persistent across Monit restart.
+Syntax:
 
-If you use Monit in a HA-cluster you should place the Monit state file
-in a temporary filesystem so if the machine which runs HA-services
-should crash and the stand-by machine take over its services, the
-HA-services won't be started after the crashed node will boot again:
+  ONREBOOT <START | NOSTART | LASTSTATE>
 
-  set statefile /tmp/monit.state
+In I<start> mode (B<DEFAULT>), Monit will always start the service automatically
+on reboot, even if it was stopped before it.
+
+In I<nostart> mode, the service is I<never> started automatically after reboot.
+This mode is intended for a high-availability solutions with active/passive clusters.
+For example: the service group HA is started on machine M1, the machine M2 is backup,
+heartbeat is in place between both machines. The service group HA (such as an mobile
+IP alias + application server). must be started on one node only. When M1 dies,
+M2 takes HA group over, but if M1 reboots, it is important that it won't try to start
+the HA group too (even though it was active on M1 before it crashed), as HA is running
+on M2 now.
+
+In I<laststate> mode, a service monitoring state is persistent across reboot, i.e. if
+the service was started before reboot, it'll be started after reboot too and vice versa.
 
 
 =head1 SERVICE RESTART LIMIT
@@ -2232,9 +2289,9 @@ Example:
        if changed ppid then exec "/my/script"
 
 
-=head2 PROCESS UPTIME TESTING
+=head2 UPTIME TESTING
 
-The uptime statement may only be used in a process service
+The uptime statement may only be used in a process and system service
 type context.
 
 Syntax:
@@ -3462,9 +3519,25 @@ F<~/.monit.id>
 =head1 ENVIRONMENT
 
 No environment variables are used by Monit. However, when Monit
-execute a script or a program Monit will set several environment
-variables which can be utilised by the executable. The following
-and I<only> the following environment variables are available:
+executes a start/stop/restart program or an exec action, it will
+set several environment variables which can be utilised by the
+executable to get informations about the event, which triggered
+the action.
+
+The following environment variable is set for every program
+executed by monit, including I<check program>:
+
+=over 4
+
+=item MONIT_SERVICE
+
+The name of the service (from monitrc) for which is the program
+executed.
+
+=back
+
+The following environment variables are only available in the
+service start/stop/restart program and exec action context:
 
 =over 4
 
@@ -3476,11 +3549,6 @@ The event that occurred on the service
 
 A description of the error condition
 
-=item MONIT_SERVICE
-
-The name of the service (from monitrc) on which the event
-occurred.
-
 =item MONIT_DATE
 
 The time and date (RFC 822 style) the event occurred
@@ -3491,8 +3559,9 @@ The host the event occurred on
 
 =back
 
-The following environment variables are only available for
-I<check process> service entries:
+The following environment variables are only available in the
+I<check process> start/stop/restart program and exec action
+context:
 
 =over 4
 
@@ -3515,7 +3584,8 @@ Process cpu%. This may be 0 if the process was (re)started,
 =back
 
 The following environment variables are only available for
-I<check program> service entries:
+I<check program> start/stop/restart program and exec action
+context:
 
 =over 4
 

@@ -91,7 +91,7 @@
 #endif
 
 #include "monit.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "process_sysdep.h"
 
 /**
@@ -112,7 +112,18 @@ boolean_t init_process_info_sysdep(void) {
         systeminfo.cpus = sysconf( _SC_NPROCESSORS_ONLN);
         page_size = getpagesize();
         systeminfo.mem_max = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)page_size;
-
+        kstat_ctl_t *kctl = kstat_open();
+        if (kctl) {
+                kstat_t *kstat = kstat_lookup(kctl, "unix", 0, "system_misc");
+                if (kstat) {
+                        if (kstat_read(kctl, kstat, 0) != -1) {
+                                kstat_named_t *knamed = kstat_data_lookup(kstat, "boot_time");
+                                if (knamed)
+                                        systeminfo.booted = (uint64_t)knamed->value.ul;
+                        }
+                }
+                kstat_close(kctl);
+        }
         return true;
 }
 
@@ -151,7 +162,7 @@ int initprocesstree_sysdep(ProcessTree_T **reference, ProcessEngine_Flags pflags
 
         for (int i = 0; i < treesize; i++) {
                 pt[i].pid = atoi(globbuf.gl_pathv[i] + strlen("/proc/"));
-                if (read_proc_file(buf, sizeof(buf), "psinfo", pt[i].pid, NULL)) {
+                if (file_readProc(buf, sizeof(buf), "psinfo", pt[i].pid, NULL)) {
                         pt[i].ppid         = psinfo->pr_ppid;
                         pt[i].cred.uid     = psinfo->pr_uid;
                         pt[i].cred.euid    = psinfo->pr_euid;
@@ -166,7 +177,7 @@ int initprocesstree_sysdep(ProcessTree_T **reference, ProcessEngine_Flags pflags
                                         pt[i].cmdline = Str_dup(psinfo->pr_fname);
                                 }
                         }
-                        if (read_proc_file(buf, sizeof(buf), "status", pt[i].pid, NULL)) {
+                        if (file_readProc(buf, sizeof(buf), "status", pt[i].pid, NULL)) {
                                 memcpy(&pstatus, buf, sizeof(pstatus_t));
                                 pt[i].cpu.time = timestruc_to_tseconds(pstatus.pr_utime) + timestruc_to_tseconds(pstatus.pr_stime);
                                 pt[i].threads = pstatus.pr_nlwp;

@@ -22,24 +22,43 @@
  * for all of the code used other than OpenSSL.
  */
 
-#ifndef MONIT_PROCESS_H
-#define MONIT_PROCESS_H
+#ifndef HTTPCLIENT_H
+#define HTTPCLIENT_H
 
-#include "config.h"
 
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>
+/**
+ * Do service action
+ * @param action A string representation of Action_Type
+ * @param services List of services
+ * @return true if succeeded otherwise false
+ */
+boolean_t HttpClient_action(const char *action, List_T services);
+
+
+/**
+ * Print service report
+ * @param type Report type or NULL
+ * @return true if succeeded otherwise false
+ */
+boolean_t HttpClient_report(const char *type);
+
+
+/**
+ * Print service status
+ * @param group Service group or NULL
+ * @param service Service name or NULL
+ * @return true if succeeded otherwise false
+ */
+boolean_t HttpClient_status(const char *group, const char *service);
+
+
+/**
+ * Print service summary
+ * @param group Service group or NULL
+ * @param service Service name or NULL
+ * @return true if succeeded otherwise false
+ */
+boolean_t HttpClient_summary(const char *group, const char *service);
+
+
 #endif
-
-boolean_t update_process_data(Service_T s, ProcessTree_T *, int treesize, pid_t pid);
-boolean_t init_process_info(void);
-boolean_t update_system_load();
-time_t getProcessUptime(pid_t pid, ProcessTree_T *pt, int treesize);
-int initprocesstree(ProcessTree_T **, int *, ProcessEngine_Flags);
-void delprocesstree(ProcessTree_T **, int *);
-void process_testmatch(char *);
-boolean_t read_proc_file(char *, int, char *, int, int *);
-void fillprocesstree(ProcessTree_T *, int);
-
-#endif
-

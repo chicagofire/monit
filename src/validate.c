@@ -99,7 +99,7 @@
 #include "socket.h"
 #include "net.h"
 #include "device.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "protocol.h"
 
 // libmonit
@@ -119,7 +119,7 @@
 
 
 /**
- * Read program output into stringbuffer. Limit the output to 1kB
+ * Read program output into stringbuffer. Limit the output per Run.limits.programOutput
  */
 static void _programOutput(InputStream_T I, StringBuffer_T S) {
         int n;
@@ -691,17 +691,17 @@ static State_Type _checkSize(Service_T s, off_t size) {
 /**
  * Test uptime
  */
-static State_Type _checkUptime(Service_T s) {
+static State_Type _checkUptime(Service_T s, long long uptime) {
         ASSERT(s);
         State_Type rv = State_Succeeded;
-        if (s->inf->priv.process.uptime < 0)
+        if (uptime < 0)
                 return State_Init;
         for (Uptime_T ul = s->uptimelist; ul; ul = ul->next) {
-                if (Util_evalQExpression(ul->operator, s->inf->priv.process.uptime, ul->uptime)) {
+                if (Util_evalQExpression(ul->operator, uptime, ul->uptime)) {
                         rv = State_Failed;
-                        Event_post(s, Event_Uptime, State_Failed, ul->action, "uptime test failed for %s -- current uptime is %llu seconds", s->path, (unsigned long long)s->inf->priv.process.uptime);
+                        Event_post(s, Event_Uptime, State_Failed, ul->action, "uptime test failed for %s -- current uptime is %llu seconds", s->path, (unsigned long long)uptime);
                 } else {
-                        Event_post(s, Event_Uptime, State_Succeeded, ul->action, "uptime test succeeded [current uptime=%llu seconds]", (unsigned long long)s->inf->priv.process.uptime);
+                        Event_post(s, Event_Uptime, State_Succeeded, ul->action, "uptime test succeeded [current uptime=%llu seconds]", (unsigned long long)uptime);
                 }
         }
         return rv;
@@ -1050,8 +1050,8 @@ int validate() {
         Run.handler_flag = Handler_Succeeded;
         Event_queue_process();
 
-        update_system_load();
-        initprocesstree(&ptree, &ptreesize, ProcessEngine_None);
+        update_system_info();
+        ProcessTree_init(ProcessEngine_None);
         gettimeofday(&systeminfo.collected, NULL);
 
         /* In the case that at least one action is pending, perform quick loop to handle the actions ASAP */
@@ -1066,7 +1066,8 @@ int validate() {
         for (Service_T s = servicelist; s; s = s->next) {
                 if (Run.flags & Run_Stopped)
                         break;
-                if (! _doScheduledAction(s) && s->monitor && ! _checkSkip(s)) {
+                // FIXME: The Service_Program must collect the exit value from last run, even if the program start should be skipped in this cycle => let check program always run the test (to be refactored with new scheduler)
+                if (! _doScheduledAction(s) && s->monitor && (s->type == Service_Program || ! _checkSkip(s))) {
                         _checkTimeout(s); // Can disable monitoring => need to check s->monitor again
                         if (s->monitor) {
                                 State_Type state = s->check(s);
@@ -1090,7 +1091,7 @@ State_Type check_process(Service_T s) {
         ASSERT(s);
         ASSERT(s->inf);
         State_Type rv = State_Succeeded;
-        pid_t pid = Util_isProcessRunning(s);
+        pid_t pid = ProcessTree_findProcess(s);
         if (! pid) {
                 for (Nonexist_T l = s->nonexistlist; l; l = l->next)
                         Event_post(s, Event_Nonexist, State_Failed, l->action, "process is not running");
@@ -1106,7 +1107,7 @@ State_Type check_process(Service_T s) {
                 for (ActionRate_T ar = s->actionratelist; ar; ar = ar->next)
                         Event_post(s, Event_Timeout, State_Succeeded, ar->action, "process is running after previous restart timeout (manually recovered?)");
         if (Run.flags & Run_ProcessEngineEnabled) {
-                if (update_process_data(s, ptree, ptreesize, pid)) {
+                if (ProcessTree_updateProcess(s, pid)) {
                         if (_checkProcessState(s) == State_Failed)
                                 rv = State_Failed;
                         if (_checkProcessPid(s) == State_Failed)
@@ -1119,7 +1120,7 @@ State_Type check_process(Service_T s) {
                                 rv = State_Failed;
                         if (_checkGid(s, s->inf->priv.process.gid) == State_Failed)
                                 rv = State_Failed;
-                        if (_checkUptime(s) == State_Failed)
+                        if (_checkUptime(s, s->inf->priv.process.uptime) == State_Failed)
                                 rv = State_Failed;
                         for (Resource_T pr = s->resourcelist; pr; pr = pr->next)
                                 if (_checkProcessResources(s, pr) == State_Failed)
@@ -1372,14 +1373,17 @@ State_Type check_program(Service_T s) {
         } else {
                 rv = State_Init;
         }
-        // Start program
-        s->program->P = Command_execute(s->program->C);
-        if (! s->program->P) {
-                rv = State_Failed;
-                Event_post(s, Event_Status, State_Failed, s->action_EXEC, "failed to execute '%s' -- %s", s->path, STRERROR);
-        } else {
-                Event_post(s, Event_Status, State_Succeeded, s->action_EXEC, "program started");
-                s->program->started = now;
+        //FIXME: the current off-by-one-cycle based design requires that the check program will collect the exit value next cycle even if program startup should be skipped in the given cycle => must test skip here (new scheduler will obsolete this deferred skip checking)
+        if (! _checkSkip(s)) {
+                // Start program
+                s->program->P = Command_execute(s->program->C);
+                if (! s->program->P) {
+                        rv = State_Failed;
+                        Event_post(s, Event_Status, State_Failed, s->action_EXEC, "failed to execute '%s' -- %s", s->path, STRERROR);
+                } else {
+                        Event_post(s, Event_Status, State_Succeeded, s->action_EXEC, "program started");
+                        s->program->started = now;
+                }
         }
         return rv;
 }
@@ -1444,6 +1448,8 @@ State_Type check_system(Service_T s) {
         for (Resource_T r = s->resourcelist; r; r = r->next)
                 if (_checkProcessResources(s, r) == State_Failed)
                         rv = State_Failed;
+        if (_checkUptime(s, Time_now() - systeminfo.booted) == State_Failed)
+                rv = State_Failed;
         return rv;
 }
 

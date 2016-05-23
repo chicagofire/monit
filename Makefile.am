@@ -15,7 +15,7 @@ YACCFLAGS	= -dvt
 POD2MAN		= @POD2MAN@
 POD2MANFLAGS	= @POD2MANFLAGS@
 
-AM_CPPFLAGS	= $(CPPFLAGS) $(EXTCPPFLAGS) -D@ARCH@ -DSYSCONFDIR="\"@sysconfdir@\"" -I./src -I./src/device -I./src/http -I./src/notification -I./src/process -I./src/protocols -I./src/ssl -I./libmonit/src
+AM_CPPFLAGS	= $(CPPFLAGS) $(EXTCPPFLAGS) -D@ARCH@ -DSYSCONFDIR="\"@sysconfdir@\"" -I./src -I./src/device -I./src/http -I./src/notification -I./src/process -I./src/protocols -I./src/ssl -I./src/terminal -I./libmonit/src
 AM_LDFLAGS	= $(LDFLAGS) $(EXTLDFLAGS) -L./lib/
 
 bin_PROGRAMS	= monit
@@ -23,7 +23,6 @@ monit_SOURCES	= src/y.tab.c \
 		  src/lex.yy.c \
 		  src/monit.c \
 		  src/alert.c \
-		  src/collector.c \
 		  src/control.c \
 		  src/daemonize.c \
 		  src/env.c \
@@ -35,24 +34,25 @@ monit_SOURCES	= src/y.tab.c \
 		  src/md5.c \
 		  src/md5_crypt.c \
 		  src/net.c \
-		  src/process.c \
 		  src/sha1.c \
 		  src/signal.c \
 		  src/socket.c \
 		  src/spawn.c \
 		  src/state.c \
-		  src/status.c \
 		  src/util.c \
 		  src/validate.c \
-		  src/xml.c \
 		  src/device/device_common.c \
 		  src/device/sysdep_@ARCH@.c \
 		  src/http/base64.c \
 		  src/http/cervlet.c \
+		  src/http/client.c \
 		  src/http/engine.c \
+		  src/http/xml.c \
 		  src/http/processor.c \
 		  src/notification/Address.c \
+		  src/notification/MMonit.c \
 		  src/notification/SMTP.c \
+		  src/process/ProcessTree.c \
 		  src/process/sysdep_@ARCH@.c \
 		  src/protocols/apache_status.c \
 		  src/protocols/clamav.c \
@@ -86,7 +86,9 @@ monit_SOURCES	= src/y.tab.c \
 		  src/protocols/ssh.c \
 		  src/protocols/tns.c \
 		  src/protocols/websocket.c \
-		  src/ssl/Ssl.c
+		  src/ssl/Ssl.c \
+		  src/terminal/Box.c \
+		  src/terminal/Color.c
  
 monit_LDADD 	= libmonit/libmonit.la
 monit_LDFLAGS 	= -static $(EXTLDFLAGS)

@@ -115,7 +115,7 @@
 #include "sha1.h"
 #include "base64.h"
 #include "alert.h"
-#include "process.h"
+#include "ProcessTree.h"
 #include "event.h"
 #include "state.h"
 #include "protocol.h"
@@ -291,13 +291,6 @@ static void printevents(unsigned int events) {
 
         }
         printf("\n");
-}
-
-
-static boolean_t _processMatch(Match_T match, const char *command) {
-        if (command)
-                return regexec(match->regex_comp, command, 0, NULL, 0) ? false : true;
-        return false;
 }
 
 
@@ -961,6 +954,7 @@ void Util_printService(Service_T s) {
                 printf(" %-20s = %s\n", "Path", s->path);
         }
         printf(" %-20s = %s\n", "Monitoring mode", modenames[s->mode]);
+        printf(" %-20s = %s\n", "On reboot", onrebootnames[s->onreboot]);
         if (s->start) {
                 printf(" %-20s = '", "Start program");
                 for (int i = 0; s->start->arg[i]; i++)
@@ -1475,66 +1469,6 @@ pid_t Util_getPid(char *pidfile) {
 }
 
 
-int Util_isProcessRunning(Service_T s) {
-        ASSERT(s);
-        errno = 0;
-        if (s->matchlist) {
-                // Test the cached PID first
-                if (s->inf->priv.process.pid > 0 && (getpgid(s->inf->priv.process.pid) > -1 || errno == EPERM))
-                        return s->inf->priv.process.pid;
-                // If the cached PID is not running, rescan the process tree
-                initprocesstree(&ptree, &ptreesize, ProcessEngine_CollectCommandLine);
-                /* The process table read may sporadically fail during read, because we're using glob on some platforms which may fail if the proc filesystem
-                 * which it traverses is changed during glob (process stopped). Note that the glob failure is rare and temporary - it will be OK on next cycle.
-                 * We skip the process matching that cycle however because we don't have process informations - will retry next cycle */
-                if (Run.flags & Run_ProcessEngineEnabled) {
-                        for (int i = 0; i < ptreesize; i++)
-                                if (_processMatch(s->matchlist, ptree[i].cmdline) && (i == ptree[i].parent || ! _processMatch(s->matchlist, ptree[ptree[i].parent].cmdline)) && (getpgid(ptree[i].pid) > -1 || errno == EPERM))
-                                        return ptree[i].pid;
-                } else {
-                        DEBUG("Process information not available -- skipping service %s process existence check for this cycle\n", s->name);
-                        /* Return value is NOOP - it is based on existing errors bitmap so we don't generate false recovery/failures */
-                        return ! (s->error & Event_Nonexist);
-                }
-        } else {
-                pid_t pid = Util_getPid(s->path);
-                if (pid > 0) {
-                        if (getpgid(pid) > -1 || errno == EPERM)
-                                return pid;
-                        DEBUG("'%s' process test failed [pid=%d] -- %s\n", s->name, pid, STRERROR);
-                }
-        }
-        Util_resetInfo(s);
-        return 0;
-}
-
-
-char *Util_getUptime(time_t delta, char *sep) {
-        static int min = 60;
-        static int hour = 3600;
-        static int day = 86400;
-        long rest_d;
-        long rest_h;
-        long rest_m;
-        char buf[STRLEN] = {};
-        char *p = buf;
-
-        if (delta < 0)
-                return(Str_dup(""));
-        if ((rest_d = delta / day)>0) {
-                p += snprintf(p, STRLEN - (p - buf), "%ldd%s", rest_d, sep);
-                delta -= rest_d * day;
-        }
-        if ((rest_h = delta / hour) > 0 || (rest_d > 0)) {
-                p += snprintf(p, STRLEN - (p - buf), "%ldh%s", rest_h, sep);
-                delta -= rest_h * hour;
-        }
-        rest_m = delta / min;
-        snprintf(p, STRLEN - (p - buf), "%ldm%s", rest_m, sep);
-        return Str_dup(buf);
-}
-
-
 boolean_t Util_isurlsafe(const char *url) {
         ASSERT(url && *url);
         for (int i = 0; url[i]; i++)
@@ -1594,23 +1528,6 @@ char *Util_encodeServiceName(char *name) {
         for (i = 0; s[i]; i++)
                 if (s[i] == '/') return Util_replaceString(&s, "/", "%2F");
         return s;
-}
-
-
-char *Util_getBasicAuthHeaderMonit() {
-        Auth_T c = Run.httpd.credentials;
-
-        /* We find the first cleartext credential for authorization */
-        while (c != NULL) {
-                if (c->digesttype == Digest_Cleartext && ! c->is_readonly)
-                        break;
-                c = c->next;
-        }
-
-        if (c)
-                return Util_getBasicAuthHeader(c->uname, c->passwd);
-
-        return NULL;
 }
 
 
@@ -1827,8 +1744,16 @@ boolean_t Util_evalQExpression(Operator_Type operator, long long left, long long
                         if (left > right)
                                 return true;
                         break;
+                case Operator_GreaterOrEqual:
+                        if (left >= right)
+                                return true;
+                        break;
                 case Operator_Less:
                         if (left < right)
+                                return true;
+                        break;
+                case Operator_LessOrEqual:
+                        if (left <= right)
                                 return true;
                         break;
                 case Operator_Equal:
@@ -1854,8 +1779,16 @@ boolean_t Util_evalDoubleQExpression(Operator_Type operator, double left, double
                         if (left > right)
                                 return true;
                         break;
+                case Operator_GreaterOrEqual:
+                        if (left >= right)
+                                return true;
+                        break;
                 case Operator_Less:
                         if (left < right)
+                                return true;
+                        break;
+                case Operator_LessOrEqual:
+                        if (left <= right)
                                 return true;
                         break;
                 case Operator_Equal:
@@ -2022,38 +1955,6 @@ char *Util_portDescription(Port_T p, char *buf, int bufsize) {
 }
 
 
-int Util_getfqdnhostname(char *buf, unsigned len) {
-        int status;
-        char hostname[STRLEN];
-
-        // Set the base hostname
-        if (gethostname(hostname, sizeof(hostname))) {
-                LogError("Error getting hostname -- %s\n", STRERROR);
-                return -1;
-        }
-        snprintf(buf, len, "%s", hostname);
-
-        // Try to look for FQDN hostname
-        struct addrinfo *result = NULL, hints = {
-                .ai_family = AF_UNSPEC,
-                .ai_flags = AI_CANONNAME,
-                .ai_socktype = SOCK_STREAM
-        };
-        if (! (status = getaddrinfo(hostname, NULL, &hints, &result))) {
-                for (struct addrinfo *r = result; r; r = r->ai_next) {
-                        if (Str_startsWith(r->ai_canonname, hostname)) {
-                                snprintf(buf, len, "%s", r->ai_canonname);
-                                break;
-                        }
-                }
-                freeaddrinfo(result);
-        } else {
-                LogError("Cannot translate '%s' to FQDN name -- %s\n", hostname, status == EAI_SYSTEM ? STRERROR : gai_strerror(status));
-        }
-        return 0;
-}
-
-
 const char *Util_timestr(int time) {
         int i = 0;
         struct mytimetable {
@@ -2072,45 +1973,5 @@ const char *Util_timestr(int time) {
                         return tt[i].description;
         } while (tt[++i].description);
         return NULL;
-}
-
-
-void Util_parseMonitHttpResponse(Socket_T S) {
-        char buf[1024];
-        if (! Socket_readLine(S, buf, sizeof(buf)))
-                THROW(IOException, "Error receiving data -- %s", STRERROR);
-        Str_chomp(buf);
-        int status;
-        if (! sscanf(buf, "%*s %d", &status))
-                THROW(IOException, "Cannot parse status in response: %s", buf);
-        if (status >= 300) {
-                int content_length = 0;
-                // Read HTTP headers
-                while (Socket_readLine(S, buf, sizeof(buf))) {
-                        if (! strncmp(buf, "\r\n", sizeof(buf)))
-                                break;
-                        if (Str_startsWith(buf, "Content-Length") && ! sscanf(buf, "%*s%*[: ]%d", &content_length))
-                                THROW(IOException, "Invalid Content-Length header: %s", buf);
-                }
-                // Parse error response
-                char *message = NULL;
-                if (content_length > 0 && content_length < 1024 && Socket_readLine(S, buf, sizeof(buf))) {
-                        char token[] = "</h2>";
-                        message = strstr(buf, token);
-                        if (strlen(message) > strlen(token)) {
-                                message += strlen(token);
-                                char *footer = NULL;
-                                if ((footer = strstr(message, "<p>")) || (footer = strstr(message, "<hr>")))
-                                        *footer = 0;
-                        }
-                }
-                THROW(AssertException, "%s", message ? message : "cannot parse response");
-        } else {
-                // Skip HTTP headers
-                while (Socket_readLine(S, buf, sizeof(buf))) {
-                         if (! strncmp(buf, "\r\n", sizeof(buf)))
-                                break;
-                }
-        }
 }
 
